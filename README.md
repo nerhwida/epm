@@ -50,8 +50,8 @@ npm run dev
 ### A. 자유형식 (단건)
 
 ```
-(한국외국어고) 중등학교 교사 이지혜 스페인어 신규
-중등학교 교사에 임함. (두 서) 학교 근무를 명함. 2025. 9. 1.
+(한국외국어고) 중등학교 교사 홍길동 국어 신규
+중등학교 교사에 임함. (두 서) 학교 근무를 명함. 2026. 3. 1.
 ```
 
 ### B. 발령 표 (1행 포맷)
@@ -108,9 +108,9 @@ npm run dev
 ### 검색 예시
 
 ```
-GET /api/appointments?name=지혜
-GET /api/appointments?organization=외국어
-GET /api/appointments?subject=스페인
-GET /api/appointments?appointment_date=2025. 9.
+GET /api/appointments?name=홍길동
+GET /api/appointments?organization=한국중
+GET /api/appointments?subject=국어
+GET /api/appointments?appointment_date=2026. 3.
 GET /api/appointments?page=2&limit=20
 ```

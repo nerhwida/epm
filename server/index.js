@@ -3,6 +3,8 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { connectDb, ensureDefaultUsers } from "./db.js";
 import { appointmentsRouter } from "./routes/appointments.js";
 import { parseRouter } from "./routes/parse.js";
@@ -53,6 +55,13 @@ app.use("/api/appointments", (req, res, next) => {
   if (req.method === "GET") return requireAuth(req, res, next);
   return requireAdmin(req, res, next);
 }, appointmentsRouter);
+
+// 프로덕션: 빌드된 프론트엔드 서빙 + SPA 폴백
+if (process.env.NODE_ENV === "production") {
+  const distPath = join(dirname(fileURLToPath(import.meta.url)), "../dist");
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => res.sendFile(join(distPath, "index.html")));
+}
 
 app.use((error, req, res, next) => {
   if (process.env.NODE_ENV !== "production") console.error(error);

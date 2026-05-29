@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-const API_BASE = "http://127.0.0.1:4000/api";
+const API_BASE = import.meta.env.PROD ? "/api" : "http://127.0.0.1:4000/api";
 
 const FIELDS = [
   ["organization", "발령기관"],

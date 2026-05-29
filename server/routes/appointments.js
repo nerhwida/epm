@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { Appointment } from "../models/Appointment.js";
+import { auditLog } from "../utils/audit.js";
 
 export const appointmentsRouter = Router();
 
@@ -100,6 +101,7 @@ appointmentsRouter.post("/bulk", async (req, res, next) => {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!items.length) return res.status(400).json({ error: "저장할 데이터가 없습니다." });
     const result = await Appointment.insertMany(items.map((item) => pickWritableFields(item || {})));
+    auditLog("APPT_BULK_INSERT", { username: req.user?.username, ip: req.ip, detail: `${result.length}건` });
     res.status(201).json({ inserted: result.length, items: result });
   } catch (error) {
     next(error);
@@ -123,6 +125,7 @@ appointmentsRouter.put("/:id", async (req, res, next) => {
       runValidators: true,
     });
     if (!item) return res.status(404).json({ error: "데이터를 찾을 수 없습니다." });
+    auditLog("APPT_UPDATE", { username: req.user?.username, ip: req.ip, detail: req.params.id });
     res.json(item);
   } catch (error) {
     next(error);
@@ -133,6 +136,7 @@ appointmentsRouter.delete("/:id", async (req, res, next) => {
   try {
     const item = await Appointment.findByIdAndDelete(req.params.id);
     if (!item) return res.status(404).json({ error: "데이터를 찾을 수 없습니다." });
+    auditLog("APPT_DELETE", { username: req.user?.username, ip: req.ip, detail: req.params.id });
     res.json({ deleted: true });
   } catch (error) {
     next(error);

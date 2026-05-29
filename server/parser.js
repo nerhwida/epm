@@ -42,8 +42,12 @@ const SUBJECT_KEYWORDS = [...new Set([
   "도덕",
   "윤리",
   "과학",
+  "상업",
+  "공업",
   "건설",
+  "토목",
   "기계·금속",
+  "기계",
   "교련",
   "디자인·공예",
   "식품가공",
@@ -59,19 +63,24 @@ const SUBJECT_KEYWORDS = [...new Set([
   "기술·가정",
   "기술",
   "가정",
+  "공통사회",
   "일반사회",
   "전기·전자·통신",
+  "전자계산",
+  "전기",
   "전자",
   "정보",
   "정보·컴퓨터",
+  "컴퓨터",
   "한문",
   "중국어",
   "일본어",
   "스페인어",
   "프랑스어",
   "독일어",
-  "진로",
   "진로진학상담",
+  "진로상담",
+  "진로",
   "상담",
   "전문상담",
   "보건",
@@ -85,12 +94,22 @@ const POSITION_ALIASES = {
   "초등학교장": "초등학교 교장",
   "특수학교장": "특수학교 교장",
   "유치원장": "유치원 원장",
+  "중등교사": "중등학교 교사",
+  "초등교사": "초등학교 교사",
+  "특수교사": "특수학교 교사",
+  "상담교사": "중등학교 교사",
+  "교사": "중등학교 교사",
+  "초빙교장": "중등학교 교장",
+  "초빙교감": "중등학교 교감",
 };
 
 function normalizeText(text) {
   return text
     .replace(/\r\n?/g, "\n")
-    .replace(/･/g, "·")
+    .replace(/[･․．ㆍ]/g, "·")
+    .replace(/～/g, "~")
+    .replace(/디자인공예/g, "디자인·공예")
+    .replace(/기\s*·\s*가/g, "기술·가정")
     .replace(/[ \t]+/g, " ")
     .replace(/(\d{4})\s+(\d{1,2}\.)/g, "$1. $2")
     .replace(/\n{2,}/g, "\n")
@@ -102,8 +121,8 @@ function splitRecords(text) {
   if (!normalized) return [];
   const compacted = compactText(normalized);
   if (
-    (compacted.includes("발령기관") && compacted.includes("현임기관")) ||
-    (compacted.includes("신임교") && compacted.includes("현임교"))
+    (compacted.includes("발령기관") && (compacted.includes("현임기관") || compacted.includes("소속교"))) ||
+    (compacted.includes("신임교") && (compacted.includes("현임교") || compacted.includes("소속교")))
   ) {
     return [normalized];
   }
@@ -150,7 +169,7 @@ function normalizeSubject(subject) {
 }
 
 function formatInstitutionName(value) {
-  const compacted = compactValue(value).replace(/[.。]+$/g, "");
+  const compacted = compactValue(value).replace(/^[)）]+/, "").replace(/[.。]+$/g, "");
   if (!compacted || compacted === "신규") return compacted;
 
   return compacted
@@ -367,7 +386,7 @@ function parseTableLikeRecords(text) {
   const tableHeaderIndexes = [compacted.indexOf("발령기관"), compacted.indexOf("신임교")]
     .filter((index) => index !== -1);
   const tableHeaderIndex = tableHeaderIndexes.length ? Math.min(...tableHeaderIndexes) : -1;
-  const hasTableTail = compacted.includes("현임기관") || compacted.includes("현임교");
+  const hasTableTail = compacted.includes("현임기관") || compacted.includes("현임교") || compacted.includes("소속교");
   if (tableHeaderIndex === -1 || !hasTableTail) {
     return [];
   }
@@ -388,8 +407,10 @@ function parseTableLikeRecords(text) {
 
   const isPositionOrg = (org) => POSITION_KEYWORD_SET.has(compactKeyword(org));
 
-  function calcRowEnd(startAfter) {
-    const nextOrg = allOrgMatches.find((m) => m.index > startAfter);
+  function calcRowEnd(startAfter, skipPositionOrgs = false) {
+    const nextOrg = skipPositionOrgs
+      ? allOrgMatches.find((m) => m.index > startAfter && !isPositionOrg(m.organization))
+      : allOrgMatches.find((m) => m.index > startAfter);
     const instrIdx = tableText.indexOf("(두서)", startAfter);
     const candidates = [nextOrg?.index ?? -1, instrIdx].filter((c) => c !== -1);
     return candidates.length ? Math.min(...candidates) : tableText.length;
@@ -410,23 +431,34 @@ function parseTableLikeRecords(text) {
     const nextIsPositionOrg = next && isPositionOrg(next.organization);
 
     if (nextIsPositionOrg) {
-      // 2행 포맷: (기관) 직위\n(직급) 이름 현직위 현임기관
-      const betweenOrgs = tableText.slice(curr.end, next.index);
-      const basePosition = findPositionOccurrences(betweenOrgs)[0]?.position || "";
-      const combinedPosition = basePosition ? `${basePosition}(${next.organization})` : next.organization;
+      const betweenContent = tableText.slice(curr.end, next.index);
+      const firstPos = findPositionOccurrences(betweenContent)[0];
+      const afterPosContent = firstPos ? betweenContent.slice(firstPos.end) : betweenContent;
 
-      const dataText = tableText.slice(next.end, calcRowEnd(next.end));
-      const { name, prev_position, prev_org } = parseNameLeadRow(dataText);
+      if (/[가-힣]/.test(afterPosContent)) {
+        // 포지션 키워드 뒤에 이름 등 내용이 있으면 1행 내부 포지션 괄호 — 1행으로 처리
+        const rowText = tableText.slice(curr.end, calcRowEnd(curr.end, true));
+        const parsed = parseTableRow(rowText, curr.organization);
+        if (parsed) rows.push(parsed);
+        i++;
+      } else {
+        // 2행 포맷: (기관) 직위\n(직급) 이름 현직위 현임기관
+        const basePosition = firstPos?.position || "";
+        const combinedPosition = basePosition ? `${basePosition}(${next.organization})` : next.organization;
 
-      rows.push({
-        organization: formatInstitutionName(curr.organization),
-        position: combinedPosition,
-        name,
-        subject: "",
-        prev_position,
-        prev_org,
-      });
-      i += 2;
+        const dataText = tableText.slice(next.end, calcRowEnd(next.end));
+        const { name, prev_position, prev_org } = parseNameLeadRow(dataText);
+
+        rows.push({
+          organization: formatInstitutionName(curr.organization),
+          position: combinedPosition,
+          name,
+          subject: "",
+          prev_position,
+          prev_org,
+        });
+        i += 2;
+      }
     } else {
       const rowText = tableText.slice(curr.end, calcRowEnd(curr.end));
       const parsed = parseTableRow(rowText, curr.organization);
@@ -513,13 +545,20 @@ function parseRetirementLikeRecords(text) {
     const position = findPositionAtStart(line);
     if (!position) continue;
 
-    const rest = stripPositionFromStart(line, position);
+    let rest = stripPositionFromStart(line, position);
+    let fullPosition = position;
+    const suffixMatch = rest.match(/^\(([^)]+)\)\s*/);
+    if (suffixMatch) {
+      fullPosition = `${position}(${compactValue(suffixMatch[1])})`;
+      rest = rest.slice(suffixMatch[0].length).trim();
+    }
+
     const { name, prev_org } = splitSpacedNameAndOrg(rest);
     records.push({
       organization: retirementType,
-      position,
+      position: fullPosition,
       name,
-      prev_position: position,
+      prev_position: fullPosition,
       prev_org,
     });
   }
@@ -590,8 +629,9 @@ export function parseAppointmentRecord(rawText) {
   const position = tableParsed?.position || findPosition(text);
   const name = tableParsed?.name || findName(text, position);
   const subject = tableParsed ? "" : normalizeSubject(findSubject(text, name));
-  const appointment_date = dates.at(-1) || "";
-  const term = findTerm(text);
+  const term = tableParsed?.term || findTerm(text);
+  const termDates = term ? new Set(findDates(term)) : new Set();
+  const appointment_date = dates.filter((d) => !termDates.has(d)).at(-1) || "";
   const prev_org = tableParsed?.prev_org || (text.includes("신규") ? "신규" : "");
   const prev_position = tableParsed?.prev_position || findPrevPosition(text, position);
 
@@ -620,7 +660,8 @@ export function parseAppointmentRecords(rawText) {
   if (!tableRows.length) return [parseAppointmentRecord(rawText)];
 
   const dates = findDates(text);
-  const appointment_date = dates.at(-1) || "";
+  const termDates = new Set(tableRows.flatMap((row) => (row.term ? findDates(row.term) : [])));
+  const appointment_date = dates.filter((d) => !termDates.has(d)).at(-1) || "";
 
   return tableRows.map((row) => finalizeRecord(row, text, appointment_date));
 }

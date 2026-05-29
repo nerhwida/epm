@@ -208,6 +208,76 @@ th {
   margin-top: 12px;
 }
 
+/* ─── 로그인 페이지 ─────────────────────────────────────────── */
+
+.login-wrap {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.login-card {
+  background: #ffffff;
+  border: 1px solid #d8dee6;
+  border-radius: 12px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 400px;
+}
+
+.login-card h1 {
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+
+.login-card p {
+  margin-bottom: 24px;
+}
+
+.login-field {
+  margin-bottom: 14px;
+}
+
+.login-field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #344054;
+}
+
+/* ─── 헤더 사용자 정보 ────────────────────────────────────── */
+
+.app-header {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.header-user {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.user-info {
+  align-items: center;
+  color: #475467;
+  display: flex;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.badge.role-user {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+/* ─── 반응형 ─────────────────────────────────────────────── */
+
 @media (max-width: 760px) {
   .panel-header {
     display: block;
@@ -219,5 +289,13 @@ th {
 
   .filters {
     grid-template-columns: 1fr;
+  }
+
+  .app-header {
+    display: block;
+  }
+
+  .header-user {
+    margin-top: 12px;
   }
 }

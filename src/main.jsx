@@ -19,14 +19,81 @@ const SAMPLE_TEXT = `(OO고) 중등학교 교사 홍길동 국어 신규
 중등학교 교사에 임함. (두 서) 학교 근무를 명함. 2026. 5. 1.`;
 
 async function request(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers,
+    credentials: "include", // httpOnly 쿠키 자동 전송
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "요청 처리 중 오류가 발생했습니다.");
   return data;
 }
+
+// ─── 로그인 페이지 ───────────────────────────────────────────────
+
+function LoginPage({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const data = await request("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      onLogin(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="login-wrap">
+      <form className="login-card" onSubmit={handleSubmit}>
+        <h1>교육청 인사 발령 관리</h1>
+        <p>시스템을 사용하려면 로그인이 필요합니다.</p>
+        {error && <div className="message error">{error}</div>}
+        <div className="login-field">
+          <label>아이디</label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="아이디 입력"
+            autoFocus
+            required
+          />
+        </div>
+        <div className="login-field">
+          <label>비밀번호</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="비밀번호 입력"
+            required
+          />
+        </div>
+        <button type="submit" disabled={busy} style={{ width: "100%", marginTop: "8px" }}>
+          {busy ? "로그인 중..." : "로그인"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── 공통 컴포넌트 ────────────────────────────────────────────────
 
 function EditableCell({ value, onChange }) {
   return (
@@ -37,6 +104,114 @@ function EditableCell({ value, onChange }) {
     />
   );
 }
+
+// ─── 일반 사용자 조회 페이지 ──────────────────────────────────────
+
+function UserView() {
+  const [items, setItems] = useState([]);
+  const [query, setQuery] = useState({
+    name: "", organization: "", subject: "", appointment_date: "", prev_org: "",
+  });
+  const [page, setPage] = useState(1);
+  const [meta, setMeta] = useState({ total: 0, pages: 1 });
+  const [message, setMessage] = useState("");
+  const [sort, setSort] = useState({ field: "", order: "asc" });
+
+  async function load(nextPage = page, nextSort = sort) {
+    const params = new URLSearchParams({ page: String(nextPage), limit: "20" });
+    Object.entries(query).forEach(([key, value]) => {
+      if (value.trim()) params.set(key, value.trim());
+    });
+    if (nextSort.field) {
+      params.set("sort_by", nextSort.field);
+      params.set("sort_order", nextSort.order);
+    }
+    try {
+      const data = await request(`/appointments?${params.toString()}`);
+      setItems(data.items || []);
+      setMeta({ total: data.total || 0, pages: data.pages || 1 });
+      setPage(data.page || nextPage);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  function handleSort(field) {
+    const nextSort = {
+      field,
+      order: sort.field === field && sort.order === "asc" ? "desc" : "asc",
+    };
+    setSort(nextSort);
+    load(1, nextSort);
+  }
+
+  function sortIndicator(field) {
+    if (sort.field !== field) return "";
+    return sort.order === "asc" ? " ▲" : " ▼";
+  }
+
+  function handleFilterKeyDown(event) {
+    if (event.key === "Enter") load(1);
+  }
+
+  useEffect(() => { load(1); }, []);
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>인사 발령 조회</h2>
+          <p>이름, 기관, 과목, 현임기관, 발령일을 부분 일치로 검색합니다.</p>
+        </div>
+        <button onClick={() => load(1)}>검색</button>
+      </div>
+      <div className="filters" onKeyDown={handleFilterKeyDown}>
+        <input placeholder="이름" value={query.name} onChange={(e) => setQuery({ ...query, name: e.target.value })} />
+        <input placeholder="기관" value={query.organization} onChange={(e) => setQuery({ ...query, organization: e.target.value })} />
+        <input placeholder="과목" value={query.subject} onChange={(e) => setQuery({ ...query, subject: e.target.value })} />
+        <input placeholder="현임기관" value={query.prev_org} onChange={(e) => setQuery({ ...query, prev_org: e.target.value })} />
+        <input placeholder="발령일" value={query.appointment_date} onChange={(e) => setQuery({ ...query, appointment_date: e.target.value })} />
+      </div>
+      {message && <div className="message error">{message}</div>}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {FIELDS.map(([key, label]) => (
+                <th key={key}>
+                  <button className="sort-header" type="button" onClick={() => handleSort(key)}>
+                    {label}{sortIndicator(key)}
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item._id}>
+                {FIELDS.map(([key]) => (
+                  <td key={key}>{item[key]}</td>
+                ))}
+              </tr>
+            ))}
+            {!items.length && (
+              <tr>
+                <td colSpan={FIELDS.length} className="empty">데이터가 없습니다.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="pager">
+        <button className="secondary" disabled={page <= 1} onClick={() => load(page - 1)}>이전</button>
+        <span>{page} / {meta.pages} 페이지, 총 {meta.total}건</span>
+        <button className="secondary" disabled={page >= meta.pages} onClick={() => load(page + 1)}>다음</button>
+      </div>
+    </section>
+  );
+}
+
+// ─── 관리자 전용: 파싱 패널 ───────────────────────────────────────
 
 function ParsePanel({ onSaved }) {
   const [text, setText] = useState(SAMPLE_TEXT);
@@ -141,14 +316,12 @@ function ParsePanel({ onSaved }) {
   );
 }
 
+// ─── 관리자 전용: 저장 데이터 패널 ───────────────────────────────
+
 function ListPanel({ refreshToken }) {
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState({
-    name: "",
-    organization: "",
-    subject: "",
-    appointment_date: "",
-    prev_org: "",
+    name: "", organization: "", subject: "", appointment_date: "", prev_org: "",
   });
   const [page, setPage] = useState(1);
   const [meta, setMeta] = useState({ total: 0, pages: 1 });
@@ -225,9 +398,7 @@ function ListPanel({ refreshToken }) {
   }
 
   function handleFilterKeyDown(event) {
-    if (event.key === "Enter") {
-      load(1);
-    }
+    if (event.key === "Enter") load(1);
   }
 
   useEffect(() => {
@@ -312,16 +483,66 @@ function ListPanel({ refreshToken }) {
   );
 }
 
-function App() {
+// ─── 관리자 뷰 (파싱 + 저장 데이터) ─────────────────────────────
+
+function AdminView() {
   const [refreshToken, setRefreshToken] = useState(0);
   return (
-    <main>
-      <header>
-        <h1>교육청 인사 발령 관리</h1>
-        <p>비정형 인사 발령 텍스트를 정형 데이터로 변환하고 검수해 저장합니다.</p>
-      </header>
-      <ParsePanel onSaved={() => setRefreshToken((value) => value + 1)} />
+    <>
+      <ParsePanel onSaved={() => setRefreshToken((v) => v + 1)} />
       <ListPanel refreshToken={refreshToken} />
+    </>
+  );
+}
+
+// ─── 앱 루트 ─────────────────────────────────────────────────────
+
+function App() {
+  // null = 로딩 중, false = 미로그인, object = 로그인 정보
+  const [auth, setAuth] = useState(null);
+
+  useEffect(() => {
+    request("/auth/me")
+      .then((data) => setAuth(data))
+      .catch(() => setAuth(false));
+  }, []);
+
+  function handleLogin(data) {
+    // 토큰은 서버가 httpOnly 쿠키로 관리 — 클라이언트는 사용자 정보만 저장
+    setAuth({ username: data.username, role: data.role });
+  }
+
+  async function handleLogout() {
+    try { await request("/auth/logout", { method: "POST" }); } catch {}
+    setAuth(false);
+  }
+
+  if (auth === null) {
+    return <div className="login-wrap"><p style={{ color: "#667085" }}>로딩 중...</p></div>;
+  }
+
+  if (!auth) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
+  return (
+    <main>
+      <header className="app-header">
+        <div>
+          <h1>교육청 인사 발령 관리</h1>
+          <p>{auth.role === "admin" ? "비정형 인사 발령 텍스트를 정형 데이터로 변환하고 검수해 저장합니다." : "인사 발령 데이터를 검색하고 조회합니다."}</p>
+        </div>
+        <div className="header-user">
+          <span className="user-info">
+            {auth.username}
+            <span className={`badge ${auth.role === "admin" ? "ok" : "role-user"}`}>
+              {auth.role === "admin" ? "관리자" : "사용자"}
+            </span>
+          </span>
+          <button className="secondary" onClick={handleLogout}>로그아웃</button>
+        </div>
+      </header>
+      {auth.role === "admin" ? <AdminView /> : <UserView />}
     </main>
   );
 }

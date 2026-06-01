@@ -286,7 +286,22 @@ function parseTableRow(rowText, organization) {
   const currentPosition = positions.find((item) => item.index === 0) || positions[0];
   if (!currentPosition) return null;
 
-  const afterCurrentPosition = rowText.slice(currentPosition.end);
+  // 국장(장학관) 형태: 직위 키워드가 괄호 안에 있고 앞에 보직명이 붙은 경우
+  let positionLabel = currentPosition.position;
+  let positionEnd = currentPosition.end;
+  if (
+    currentPosition.index > 0 &&
+    rowText[currentPosition.index - 1] === "(" &&
+    rowText[currentPosition.end] === ")"
+  ) {
+    positionEnd = currentPosition.end + 1;
+    const prefixText = rowText.slice(0, currentPosition.index - 1);
+    if (prefixText) positionLabel = `${prefixText}(${currentPosition.position})`;
+  }
+
+  const afterCurrentPosition = rowText.slice(positionEnd);
+  // 임용 지시문(에임함/에보함)으로 시작하면 데이터 행이 아님
+  if (afterCurrentPosition.startsWith("에임함") || afterCurrentPosition.startsWith("에보함")) return null;
   const restPositions = findPositionOccurrences(afterCurrentPosition)
     .filter((item) => !isInstructionPosition(afterCurrentPosition, item));
   const prevPositionInRest = restPositions[0];
@@ -322,8 +337,8 @@ function parseTableRow(rowText, organization) {
   const prevPosition = prevPositionInRest
     ? {
         ...prevPositionInRest,
-        index: currentPosition.end + prevPositionInRest.index,
-        end: currentPosition.end + prevPositionInRest.end,
+        index: positionEnd + prevPositionInRest.index,
+        end: positionEnd + prevPositionInRest.end,
       }
     : null;
 
@@ -337,7 +352,7 @@ function parseTableRow(rowText, organization) {
 
   return {
     organization: formatInstitutionName(organization),
-    position: currentPosition.position,
+    position: positionLabel,
     name,
     subject: normalizeSubject(subject),
     term,
@@ -463,9 +478,24 @@ function parseTableLikeRecords(text) {
         i += 2;
       }
     } else {
-      const rowText = tableText.slice(curr.end, calcRowEnd(curr.end));
+      // 현재 기관 괄호 바로 뒤에 다른 기관 괄호가 붙어있으면 현임기관 괄호이므로 건너뜀
+      if (next && next.index === curr.end) {
+        i++;
+        continue;
+      }
+      const rowEnd = calcRowEnd(curr.end);
+      const rowText = tableText.slice(curr.end, rowEnd);
       const parsed = parseTableRow(rowText, curr.organization);
-      if (parsed) rows.push(parsed);
+      if (parsed) {
+        // prev_org가 없고 행 경계 바로 다음에 기관 괄호가 있으면 현임기관으로 사용
+        if (!parsed.prev_org) {
+          const nextOrgAtBoundary = allOrgMatches.find((m) => m.index === rowEnd && !isPositionOrg(m.organization));
+          if (nextOrgAtBoundary) {
+            parsed.prev_org = formatInstitutionName(nextOrgAtBoundary.organization);
+          }
+        }
+        rows.push(parsed);
+      }
       i++;
     }
   }

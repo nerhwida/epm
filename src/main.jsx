@@ -110,103 +110,88 @@ function EditableCell({ value, onChange }) {
 function UserView() {
   const [items, setItems] = useState([]);
   const [query, setQuery] = useState({
-    name: "", organization: "", subject: "", appointment_date: "", prev_org: "",
+    name: "", organization: "", subject: "", appointment_date: "",
   });
   const [page, setPage] = useState(1);
   const [meta, setMeta] = useState({ total: 0, pages: 1 });
   const [message, setMessage] = useState("");
-  const [sort, setSort] = useState({ field: "", order: "asc" });
+  const [searched, setSearched] = useState(false);
 
-  async function load(nextPage = page, nextSort = sort) {
+  async function load(nextPage = page) {
     const params = new URLSearchParams({ page: String(nextPage), limit: "20" });
     Object.entries(query).forEach(([key, value]) => {
       if (value.trim()) params.set(key, value.trim());
     });
-    if (nextSort.field) {
-      params.set("sort_by", nextSort.field);
-      params.set("sort_order", nextSort.order);
-    }
     try {
       const data = await request(`/appointments?${params.toString()}`);
       setItems(data.items || []);
       setMeta({ total: data.total || 0, pages: data.pages || 1 });
       setPage(data.page || nextPage);
+      setSearched(true);
     } catch (err) {
       setMessage(err.message);
     }
   }
 
-  function handleSort(field) {
-    const nextSort = {
-      field,
-      order: sort.field === field && sort.order === "asc" ? "desc" : "asc",
-    };
-    setSort(nextSort);
-    load(1, nextSort);
-  }
-
-  function sortIndicator(field) {
-    if (sort.field !== field) return "";
-    return sort.order === "asc" ? " ▲" : " ▼";
+  function handleSearch() {
+    load(1);
   }
 
   function handleFilterKeyDown(event) {
     if (event.key === "Enter") load(1);
   }
 
-  useEffect(() => { load(1); }, []);
-
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
           <h2>인사 발령 조회</h2>
-          <p>이름, 기관, 과목, 현임기관, 발령일을 부분 일치로 검색합니다.</p>
+          <p>이름, 기관, 과목, 발령일을 입력하고 검색하세요.</p>
         </div>
-        <button onClick={() => load(1)}>검색</button>
+        <button onClick={handleSearch}>검색</button>
       </div>
       <div className="filters" onKeyDown={handleFilterKeyDown}>
         <input placeholder="이름" value={query.name} onChange={(e) => setQuery({ ...query, name: e.target.value })} />
         <input placeholder="기관" value={query.organization} onChange={(e) => setQuery({ ...query, organization: e.target.value })} />
         <input placeholder="과목" value={query.subject} onChange={(e) => setQuery({ ...query, subject: e.target.value })} />
-        <input placeholder="현임기관" value={query.prev_org} onChange={(e) => setQuery({ ...query, prev_org: e.target.value })} />
         <input placeholder="발령일" value={query.appointment_date} onChange={(e) => setQuery({ ...query, appointment_date: e.target.value })} />
       </div>
       {message && <div className="message error">{message}</div>}
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {FIELDS.map(([key, label]) => (
-                <th key={key}>
-                  <button className="sort-header" type="button" onClick={() => handleSort(key)}>
-                    {label}{sortIndicator(key)}
-                  </button>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item._id}>
-                {FIELDS.map(([key]) => (
-                  <td key={key}>{item[key]}</td>
+
+      {searched && (
+        <>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {FIELDS.map(([key, label]) => (
+                    <th key={key}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item._id}>
+                    {FIELDS.map(([key]) => (
+                      <td key={key}>{item[key]}</td>
+                    ))}
+                  </tr>
                 ))}
-              </tr>
-            ))}
-            {!items.length && (
-              <tr>
-                <td colSpan={FIELDS.length} className="empty">데이터가 없습니다.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      <div className="pager">
-        <button className="secondary" disabled={page <= 1} onClick={() => load(page - 1)}>이전</button>
-        <span>{page} / {meta.pages} 페이지, 총 {meta.total}건</span>
-        <button className="secondary" disabled={page >= meta.pages} onClick={() => load(page + 1)}>다음</button>
-      </div>
+                {!items.length && (
+                  <tr>
+                    <td colSpan={FIELDS.length} className="empty">검색 결과가 없습니다.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="pager">
+            <button className="secondary" disabled={page <= 1} onClick={() => load(page - 1)}>이전</button>
+            <span>{page} / {meta.pages} 페이지, 총 {meta.total}건</span>
+            <button className="secondary" disabled={page >= meta.pages} onClick={() => load(page + 1)}>다음</button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -218,10 +203,12 @@ function ParsePanel({ onSaved }) {
   const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [duplicates, setDuplicates] = useState([]);
 
   async function parseText() {
     setBusy(true);
     setMessage("");
+    setDuplicates([]);
     try {
       const data = await request("/parse", {
         method: "POST",
@@ -236,23 +223,52 @@ function ParsePanel({ onSaved }) {
     }
   }
 
-  async function saveAll() {
-    if (!items.length) return;
-    setBusy(true);
-    setMessage("");
+  async function doSave(itemsToSave) {
     try {
       const data = await request("/appointments/bulk", {
         method: "POST",
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items: itemsToSave }),
       });
       setMessage(`${data.inserted}건을 저장했습니다.`);
       setItems([]);
+      setDuplicates([]);
       onSaved();
     } catch (error) {
       setMessage(error.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveAll() {
+    if (!items.length) return;
+    setBusy(true);
+    setMessage("");
+    setDuplicates([]);
+    try {
+      const { duplicates: found } = await request("/appointments/check-duplicates", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      if (found.length > 0) {
+        setDuplicates(found);
+        setBusy(false);
+        return;
+      }
+      await doSave(items);
+    } catch (error) {
+      setMessage(error.message);
+      setBusy(false);
+    }
+  }
+
+  function saveWithoutDuplicates() {
+    const dupIndexes = new Set(duplicates.map((d) => d.index));
+    doSave(items.filter((_, i) => !dupIndexes.has(i)));
+  }
+
+  function saveIncludingDuplicates() {
+    doSave(items);
   }
 
   function updateItem(index, key, value) {
@@ -267,6 +283,17 @@ function ParsePanel({ onSaved }) {
     setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
   }
 
+  function downloadJSON() {
+    const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `parsed-${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -276,11 +303,28 @@ function ParsePanel({ onSaved }) {
         </div>
         <div className="actions">
           <button onClick={parseText} disabled={busy}>파싱하기</button>
+          <button className="secondary" onClick={downloadJSON} disabled={!items.length}>JSON 다운로드</button>
           <button className="secondary" onClick={saveAll} disabled={busy || !items.length}>전체 저장</button>
         </div>
       </div>
       <textarea value={text} onChange={(event) => setText(event.target.value)} />
       {message && <div className="message">{message}</div>}
+
+      {duplicates.length > 0 && (
+        <div className="message error">
+          <strong>중복 데이터 {duplicates.length}건이 발견됐습니다.</strong>
+          <ul style={{ margin: "6px 0 10px", paddingLeft: "18px" }}>
+            {duplicates.map((d) => (
+              <li key={d.index}>{d.name} / {d.organization} / {d.appointment_date}</li>
+            ))}
+          </ul>
+          <div className="actions">
+            <button onClick={saveWithoutDuplicates} disabled={busy}>중복 제외하고 저장</button>
+            <button className="secondary" onClick={saveIncludingDuplicates} disabled={busy}>전체 저장</button>
+            <button className="secondary" onClick={() => setDuplicates([])}>취소</button>
+          </div>
+        </div>
+      )}
 
       {items.length > 0 && (
         <div className="table-wrap">
@@ -294,7 +338,7 @@ function ParsePanel({ onSaved }) {
             </thead>
             <tbody>
               {items.map((item, index) => (
-                <tr key={index}>
+                <tr key={index} className={duplicates.some((d) => d.index === index) ? "dup-row" : ""}>
                   <td>
                     <span className={`badge ${item.parse_status === "parsed" ? "ok" : "warn"}`}>
                       {item.parse_status === "parsed" ? "확인" : "검수"}
@@ -483,6 +527,100 @@ function ListPanel({ refreshToken }) {
   );
 }
 
+// ─── 관리자 전용: JSON 가져오기 패널 ─────────────────────────────
+
+function ImportPanel({ onSaved }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [duplicates, setDuplicates] = useState([]);
+  const [pendingItems, setPendingItems] = useState([]);
+
+  async function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    setBusy(true);
+    setMessage("");
+    setDuplicates([]);
+    setPendingItems([]);
+    try {
+      const text = await file.text();
+      const items = JSON.parse(text);
+      if (!Array.isArray(items) || !items.length) {
+        setMessage("유효한 데이터가 없습니다.");
+        return;
+      }
+      const { duplicates: found } = await request("/appointments/check-duplicates", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      if (found.length > 0) {
+        setDuplicates(found);
+        setPendingItems(items);
+        return;
+      }
+      await doImport(items);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport(items) {
+    try {
+      const data = await request("/appointments/bulk", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      setMessage(`${data.inserted}건을 가져왔습니다.`);
+      setDuplicates([]);
+      setPendingItems([]);
+      onSaved();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function importWithoutDuplicates() {
+    const dupIdx = new Set(duplicates.map((d) => d.index));
+    doImport(pendingItems.filter((_, i) => !dupIdx.has(i)));
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>JSON 가져오기</h2>
+          <p>export-by-date.mjs로 내보낸 JSON 파일을 선택해 가져옵니다.</p>
+        </div>
+        <label style={{ cursor: "pointer" }}>
+          <input type="file" accept=".json" style={{ display: "none" }} onChange={handleFile} disabled={busy} />
+          <span className="btn">{busy ? "처리 중..." : "파일 선택"}</span>
+        </label>
+      </div>
+      {message && <div className="message">{message}</div>}
+      {duplicates.length > 0 && (
+        <div className="message error">
+          <strong>중복 데이터 {duplicates.length}건이 발견됐습니다.</strong>
+          <ul style={{ margin: "6px 0 10px", paddingLeft: "18px" }}>
+            {duplicates.map((d) => (
+              <li key={d.index}>{d.name} / {d.organization} / {d.appointment_date}</li>
+            ))}
+          </ul>
+          <div className="actions">
+            <button onClick={importWithoutDuplicates} disabled={busy}>중복 제외하고 가져오기</button>
+            <button className="secondary" onClick={() => { setBusy(true); doImport(pendingItems); }} disabled={busy}>전체 가져오기</button>
+            <button className="secondary" onClick={() => { setDuplicates([]); setPendingItems([]); }}>취소</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ─── 관리자 뷰 (파싱 + 저장 데이터) ─────────────────────────────
 
 function AdminView() {
@@ -490,6 +628,7 @@ function AdminView() {
   return (
     <>
       <ParsePanel onSaved={() => setRefreshToken((v) => v + 1)} />
+      <ImportPanel onSaved={() => setRefreshToken((v) => v + 1)} />
       <ListPanel refreshToken={refreshToken} />
     </>
   );

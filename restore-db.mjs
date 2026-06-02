@@ -29,10 +29,19 @@ for (const file of files) {
     continue;
   }
 
+  // 문자열 _id를 ObjectId로 변환 (JSON 직렬화 시 ObjectId가 문자열로 저장된 경우 복원)
+  const { ObjectId } = mongoose.Types;
+  const processed = docs.map((doc) => {
+    if (typeof doc._id === "string" && /^[0-9a-f]{24}$/i.test(doc._id)) {
+      return { ...doc, _id: ObjectId.createFromHexString(doc._id) };
+    }
+    return doc;
+  });
+
   const col = mongoose.connection.db.collection(collectionName);
   await col.deleteMany({});
-  await col.insertMany(docs);
-  console.log(`  ${collectionName}: ${docs.length}건 복원`);
+  await col.insertMany(processed);
+  console.log(`  ${collectionName}: ${processed.length}건 복원`);
   total += docs.length;
 }
 

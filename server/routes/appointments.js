@@ -108,6 +108,39 @@ appointmentsRouter.post("/bulk", async (req, res, next) => {
   }
 });
 
+appointmentsRouter.post("/check-duplicates", async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length) return res.json({ duplicates: [] });
+
+    const candidates = items
+      .map((item, index) => ({
+        index,
+        name: item.name || "",
+        organization: item.organization || "",
+        appointment_date: item.appointment_date || "",
+      }))
+      .filter(({ name }) => name);
+
+    if (!candidates.length) return res.json({ duplicates: [] });
+
+    const existing = await Appointment.find(
+      { $or: candidates.map(({ name, organization, appointment_date }) => ({ name, organization, appointment_date })) },
+      { name: 1, organization: 1, appointment_date: 1 }
+    ).lean();
+
+    const existingKeys = new Set(existing.map((e) => `${e.name}|${e.organization}|${e.appointment_date}`));
+
+    const duplicates = candidates
+      .filter(({ name, organization, appointment_date }) => existingKeys.has(`${name}|${organization}|${appointment_date}`))
+      .map(({ index, name, organization, appointment_date }) => ({ index, name, organization, appointment_date }));
+
+    res.json({ duplicates });
+  } catch (error) {
+    next(error);
+  }
+});
+
 appointmentsRouter.get("/:id", async (req, res, next) => {
   try {
     const item = await Appointment.findById(req.params.id);

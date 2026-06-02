@@ -87,6 +87,18 @@ button.secondary {
   background: #475467;
 }
 
+.btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  background: #1570ef;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  user-select: none;
+}
+
 .icon-btn {
   background: #b42318;
   min-height: 30px;
@@ -274,6 +286,10 @@ th {
 .badge.role-user {
   background: #e0f2fe;
   color: #0369a1;
+}
+
+tr.dup-row td {
+  background-color: #fff3cd;
 }
 
 /* ─── 반응형 ─────────────────────────────────────────────── */

@@ -618,6 +618,13 @@ function splitSpacedNameAndOrg(text) {
   };
 }
 
+function isPositionLine(line) {
+  if (findPositionAtStart(line)) return true;
+  const c = compactText(line);
+  const m = /^([가-힣]+)\(([^)]+)\)/.exec(c);
+  return m ? POSITION_KEYWORD_SET.has(compactValue(m[2])) : false;
+}
+
 function parseRetirementLikeRecords(text) {
   const compacted = compactText(text);
   const RETIREMENT_TYPES = ["정년퇴직", "명예퇴직", "의원면직"];
@@ -690,20 +697,50 @@ function parseRetirementLikeRecords(text) {
       });
     }
   } else {
-    // 1행 포맷 (기존 방식)
-    for (const line of dataLines) {
-      const position = findPositionAtStart(line);
-      if (!position) continue;
+    // 1행 포맷
+    for (let i = 0; i < dataLines.length; i++) {
+      const line = dataLines[i];
+      const compactedLine = compactText(line);
 
-      let rest = stripPositionFromStart(line, position);
-      let fullPosition = position;
-      const suffixMatch = rest.match(/^\(([^)]+)\)\s*/);
-      if (suffixMatch) {
-        fullPosition = `${position}(${compactValue(suffixMatch[1])})`;
-        rest = rest.slice(suffixMatch[0].length).trim();
+      let fullPosition = "";
+      let afterPosition = "";
+
+      const posAtStart = findPositionAtStart(line);
+      if (posAtStart) {
+        let rest = stripPositionFromStart(line, posAtStart);
+        const suffixMatch = rest.match(/^\s*\(([^)]+)\)\s*/);
+        if (suffixMatch) {
+          fullPosition = `${posAtStart}(${compactValue(suffixMatch[1])})`;
+          afterPosition = rest.slice(suffixMatch[0].length).trim();
+        } else {
+          fullPosition = posAtStart;
+          afterPosition = rest.trim();
+        }
+      } else {
+        // 보직명(직급) 형태: "교육정책국장(장학관) 이름 현임기관"
+        const m = /^([가-힣]+)\s*\(([^)]+)\)/.exec(compactedLine);
+        if (m) {
+          const rankCompacted = compactValue(m[2]);
+          if (POSITION_KEYWORD_SET.has(rankCompacted)) {
+            const resolvedPos = POSITION_PATTERNS.find((p) => p.keyword === rankCompacted)?.position || rankCompacted;
+            fullPosition = `${m[1]}(${resolvedPos})`;
+            const closeParenIdx = line.indexOf(")");
+            afterPosition = closeParenIdx !== -1 ? line.slice(closeParenIdx + 1).trim() : "";
+          }
+        }
       }
 
-      const { name, prev_org } = splitSpacedNameAndOrg(rest);
+      if (!fullPosition) continue;
+
+      const { name, prev_org: directOrg } = splitSpacedNameAndOrg(afterPosition);
+
+      // 현임기관이 다음 행으로 이어지는 경우 합산
+      let prev_org = directOrg;
+      if (i + 1 < dataLines.length && !isPositionLine(dataLines[i + 1])) {
+        prev_org = formatInstitutionName(prev_org + compactValue(dataLines[i + 1]));
+        i++;
+      }
+
       records.push({
         organization: retirementType,
         position: fullPosition,

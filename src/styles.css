@@ -292,6 +292,31 @@ tr.dup-row td {
   background-color: #fff3cd;
 }
 
+/* ─── 비밀번호 변경 모달 ──────────────────────────────────── */
+
+.modal-backdrop {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  z-index: 100;
+}
+
+.modal-card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 32px 28px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.modal-card h2 {
+  margin-bottom: 20px;
+}
+
 /* ─── 반응형 ─────────────────────────────────────────────── */
 
 @media (max-width: 760px) {

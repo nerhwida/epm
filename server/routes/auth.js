@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import { User } from "../models/User.js";
-import { tokenBlacklist } from "../middleware/auth.js";
+import { tokenBlacklist, requireAuth, requireAdmin } from "../middleware/auth.js";
 import { auditLog } from "../utils/audit.js";
 
 export const authRouter = Router();
@@ -93,5 +93,73 @@ authRouter.get("/me", (req, res) => {
     res.json({ username: payload.username, role: payload.role });
   } catch {
     res.status(401).json({ error: "토큰이 유효하지 않습니다." });
+  }
+});
+
+// 관리자 전용: 유저 목록 조회
+authRouter.get("/users", requireAdmin, async (req, res, next) => {
+  try {
+    const users = await User.find({}, { username: 1, role: 1, created_at: 1 }).lean();
+    res.json({ users });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 관리자 전용: 특정 유저 비밀번호 변경 (현재 비밀번호 확인 없음)
+authRouter.put("/users/:username/password", requireAdmin, async (req, res, next) => {
+  try {
+    const { newPassword } = req.body || {};
+    if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 100) {
+      return res.status(400).json({ error: "비밀번호는 8자 이상 100자 이하여야 합니다." });
+    }
+    const target = req.params.username;
+    const user = await User.findOne({ username: target });
+    if (!user) return res.status(404).json({ error: "사용자를 찾을 수 없습니다." });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    auditLog("PASSWORD_RESET_BY_ADMIN", { username: req.user.username, ip: req.ip, detail: target });
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.put("/password", requireAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+      return res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    }
+    if (newPassword.length < 8 || newPassword.length > 100) {
+      return res.status(400).json({ error: "새 비밀번호는 8자 이상 100자 이하여야 합니다." });
+    }
+
+    const user = await User.findById(req.user.id).select("+password");
+    if (!user) {
+      return res.status(404).json({ error: "사용자를 찾을 수 없습니다." });
+    }
+
+    const valid = await bcrypt.compare(currentPassword, user.password);
+    if (!valid) {
+      auditLog("PASSWORD_CHANGE_FAIL", { username: req.user.username, ip: req.ip });
+      return res.status(401).json({ error: "현재 비밀번호가 올바르지 않습니다." });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    // 비밀번호 변경 후 현재 토큰 무효화 → 재로그인 강제
+    const token = req.cookies?.epm_token;
+    if (token) tokenBlacklist.add(token);
+    res.clearCookie("epm_token");
+
+    auditLog("PASSWORD_CHANGE", { username: req.user.username, ip: req.ip });
+    res.json({ ok: true, message: "비밀번호가 변경되었습니다. 다시 로그인해 주세요." });
+  } catch (error) {
+    next(error);
   }
 });

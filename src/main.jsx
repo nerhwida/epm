@@ -93,6 +93,74 @@ function LoginPage({ onLogin }) {
   );
 }
 
+// ─── 비밀번호 변경 모달 ───────────────────────────────────────────
+
+function ChangePasswordModal({ onClose, onLogout }) {
+  const [form, setForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function update(key) {
+    return (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    if (form.newPassword !== form.confirmPassword) {
+      setError("새 비밀번호가 일치하지 않습니다.");
+      return;
+    }
+    if (form.newPassword.length < 8) {
+      setError("새 비밀번호는 8자 이상이어야 합니다.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await request("/auth/password", {
+        method: "PUT",
+        body: JSON.stringify({
+          currentPassword: form.currentPassword,
+          newPassword: form.newPassword,
+        }),
+      });
+      alert("비밀번호가 변경되었습니다. 다시 로그인해 주세요.");
+      onLogout();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <h2>비밀번호 변경</h2>
+        {error && <div className="message error">{error}</div>}
+        <form onSubmit={handleSubmit}>
+          <div className="login-field">
+            <label>현재 비밀번호</label>
+            <input type="password" value={form.currentPassword} onChange={update("currentPassword")} autoFocus required />
+          </div>
+          <div className="login-field">
+            <label>새 비밀번호</label>
+            <input type="password" value={form.newPassword} onChange={update("newPassword")} required />
+          </div>
+          <div className="login-field">
+            <label>새 비밀번호 확인</label>
+            <input type="password" value={form.confirmPassword} onChange={update("confirmPassword")} required />
+          </div>
+          <div className="actions" style={{ marginTop: "16px" }}>
+            <button type="submit" disabled={busy}>{busy ? "변경 중..." : "변경"}</button>
+            <button type="button" className="secondary" onClick={onClose}>취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── 공통 컴포넌트 ────────────────────────────────────────────────
 
 function EditableCell({ value, onChange }) {
@@ -621,6 +689,110 @@ function ImportPanel({ onSaved }) {
   );
 }
 
+// ─── 관리자 전용: 계정 관리 패널 ─────────────────────────────────
+
+function UserManagePanel() {
+  const [users, setUsers] = useState([]);
+  const [editingUsername, setEditingUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [message, setMessage] = useState({ text: "", isError: false });
+
+  async function loadUsers() {
+    try {
+      const data = await request("/auth/users");
+      setUsers(data.users || []);
+    } catch (err) {
+      setMessage({ text: err.message, isError: true });
+    }
+  }
+
+  useEffect(() => { loadUsers(); }, []);
+
+  function startEdit(username) {
+    setEditingUsername(username);
+    setNewPassword("");
+    setMessage({ text: "", isError: false });
+  }
+
+  function cancelEdit() {
+    setEditingUsername("");
+    setNewPassword("");
+  }
+
+  async function handleReset(username) {
+    if (newPassword.length < 8) {
+      setMessage({ text: "비밀번호는 8자 이상이어야 합니다.", isError: true });
+      return;
+    }
+    try {
+      await request(`/auth/users/${encodeURIComponent(username)}/password`, {
+        method: "PUT",
+        body: JSON.stringify({ newPassword }),
+      });
+      setMessage({ text: `${username} 비밀번호가 변경되었습니다.`, isError: false });
+      cancelEdit();
+    } catch (err) {
+      setMessage({ text: err.message, isError: true });
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>계정 관리</h2>
+          <p>사용자 비밀번호를 초기화합니다.</p>
+        </div>
+      </div>
+      {message.text && (
+        <div className={`message${message.isError ? " error" : ""}`}>{message.text}</div>
+      )}
+      <table style={{ minWidth: 0, width: "100%" }}>
+        <thead>
+          <tr>
+            <th>아이디</th>
+            <th>권한</th>
+            <th>작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.username}>
+              <td>{u.username}</td>
+              <td>
+                <span className={`badge ${u.role === "admin" ? "ok" : "role-user"}`}>
+                  {u.role === "admin" ? "관리자" : "사용자"}
+                </span>
+              </td>
+              <td>
+                {editingUsername === u.username ? (
+                  <div className="actions">
+                    <input
+                      type="password"
+                      placeholder="새 비밀번호 (8자 이상)"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleReset(u.username)}
+                      autoFocus
+                      style={{ width: "220px" }}
+                    />
+                    <button onClick={() => handleReset(u.username)}>변경</button>
+                    <button className="secondary" onClick={cancelEdit}>취소</button>
+                  </div>
+                ) : (
+                  <button className="secondary" onClick={() => startEdit(u.username)}>
+                    비밀번호 변경
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 // ─── 관리자 뷰 (파싱 + 저장 데이터) ─────────────────────────────
 
 function AdminView() {
@@ -630,6 +802,7 @@ function AdminView() {
       <ParsePanel onSaved={() => setRefreshToken((v) => v + 1)} />
       <ImportPanel onSaved={() => setRefreshToken((v) => v + 1)} />
       <ListPanel refreshToken={refreshToken} />
+      <UserManagePanel />
     </>
   );
 }
@@ -639,6 +812,7 @@ function AdminView() {
 function App() {
   // null = 로딩 중, false = 미로그인, object = 로그인 정보
   const [auth, setAuth] = useState(null);
+  const [showPwModal, setShowPwModal] = useState(false);
 
   useEffect(() => {
     request("/auth/me")
@@ -678,10 +852,19 @@ function App() {
               {auth.role === "admin" ? "관리자" : "사용자"}
             </span>
           </span>
+          {auth.role === "admin" && (
+            <button className="secondary" onClick={() => setShowPwModal(true)}>비밀번호 변경</button>
+          )}
           <button className="secondary" onClick={handleLogout}>로그아웃</button>
         </div>
       </header>
       {auth.role === "admin" ? <AdminView /> : <UserView />}
+      {showPwModal && (
+        <ChangePasswordModal
+          onClose={() => setShowPwModal(false)}
+          onLogout={handleLogout}
+        />
+      )}
     </main>
   );
 }

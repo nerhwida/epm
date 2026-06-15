@@ -30,7 +30,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(cookieParser());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // 규칙 18: JSON API에 application/json 외 Content-Type 차단
 app.use((req, res, next) => {

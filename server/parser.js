@@ -25,6 +25,7 @@ const POSITION_KEYWORDS = [
   "장학사",
   "교육연구관",
   "교육연구사",
+  "교수",
   "교장",
   "교감",
   "원장",
@@ -126,7 +127,8 @@ function splitRecords(text) {
   const compacted = compactText(normalized);
   const isTableBlock = (
     (compacted.includes("발령기관") && (compacted.includes("현임기관") || compacted.includes("현임교") || compacted.includes("소속교"))) ||
-    (compacted.includes("신임교") && (compacted.includes("현임교") || compacted.includes("소속교")))
+    (compacted.includes("신임교") && (compacted.includes("현임교") || compacted.includes("소속교"))) ||
+    (compacted.includes("발령기관") && compacted.includes("신규"))
   );
 
   if (!isTableBlock) {
@@ -213,6 +215,10 @@ function formatInstitutionName(value) {
   let compacted = compactValue(value).replace(/^[)）]+/, "").replace(/[.。]+$/g, "");
   if (!compacted || compacted === "신규") return compacted;
 
+  // 공모·초빙 등 임용 방식 괄호는 기관명이 아니므로 앞에서 제거
+  compacted = compacted.replace(/^\((?:공모|초빙)\)/, "");
+  if (!compacted) return compacted;
+
   // 표 마지막 행에서 다음 줄 지시문의 행정구역명이 기관명 뒤에 붙는 경우 제거
   // 예: "충남여고대전광역시" → "충남여고"
   for (const suffix of ADMIN_SUFFIXES) {
@@ -254,7 +260,7 @@ function trimAppointmentInstruction(value) {
   return compacted.slice(0, end);
 }
 
-const ORG_EXCLUSIONS = new Set(["급", "두서", "명예퇴직", "정년퇴직", "직위해제", "면직", "의원면직"]);
+const ORG_EXCLUSIONS = new Set(["급", "두서", "명예퇴직", "정년퇴직", "직위해제", "면직", "의원면직", "중등", "초등", "유아", "공모", "초빙"]);
 const REGION_MARKERS = new Set([
   "서울",
   "부산",
@@ -408,11 +414,25 @@ function parseTableRow(rowText, organization) {
     if (posPrefix) prevPositionLabel = `${posPrefix}(${prevPositionInRest.position})`;
   }
 
+  // 현직위 키워드 바로 뒤에 임용 방식 괄호가 붙은 경우: 중등학교 교장(공모)
+  if (prevPositionInRest && afterCurrentPosition[prevPositionInRest.end] === "(") {
+    const qualifierMatch = /^\(([^)]+)\)/.exec(afterCurrentPosition.slice(prevPositionInRest.end));
+    if (qualifierMatch) {
+      const qualifier = compactValue(qualifierMatch[1]);
+      if (["공모", "초빙"].includes(qualifier)) {
+        prevPositionLabel = `${prevPositionLabel}(${qualifier})`;
+      }
+    }
+  }
+
   let prevOrg = rowText.includes("신규") ? "신규" : "";
   if (prevPosition) {
     prevOrg = trimAppointmentInstruction(rowText.slice(prevPosition.end));
   } else if (subjectIndex !== -1) {
-    prevOrg = trimAppointmentInstruction(afterCurrentPosition.slice(subjectIndex + subject.length));
+    const candidateOrg = trimAppointmentInstruction(afterCurrentPosition.slice(subjectIndex + subject.length));
+    if (candidateOrg && !candidateOrg.endsWith("신규")) {
+      prevOrg = candidateOrg;
+    }
   }
   const normalizedPrevOrg = formatInstitutionName(prevOrg);
 
@@ -469,7 +489,7 @@ function parseTableLikeRecords(text) {
   const tableHeaderIndexes = [compacted.indexOf("발령기관"), compacted.indexOf("신임교")]
     .filter((index) => index !== -1);
   const tableHeaderIndex = tableHeaderIndexes.length ? Math.min(...tableHeaderIndexes) : -1;
-  const hasTableTail = compacted.includes("현임기관") || compacted.includes("현임교") || compacted.includes("소속교");
+  const hasTableTail = compacted.includes("현임기관") || compacted.includes("현임교") || compacted.includes("소속교") || compacted.includes("신규");
   if (tableHeaderIndex === -1 || !hasTableTail) {
     return [];
   }
@@ -483,8 +503,7 @@ function parseTableLikeRecords(text) {
     }))
     .filter((match) =>
       match.organization &&
-      match.organization !== "급" &&
-      match.organization !== "두서" &&
+      !ORG_EXCLUSIONS.has(match.organization) &&
       !isRegionMarker(match.organization),
     );
 
@@ -520,9 +539,18 @@ function parseTableLikeRecords(text) {
 
       if (/[가-힣]/.test(afterPosContent)) {
         // 포지션 키워드 뒤에 이름 등 내용이 있으면 1행 내부 포지션 괄호 — 1행으로 처리
-        const rowText = tableText.slice(curr.end, calcRowEnd(curr.end, true));
+        const rowEnd = calcRowEnd(curr.end, true);
+        const rowText = tableText.slice(curr.end, rowEnd);
         const parsed = parseTableRow(rowText, curr.organization);
-        if (parsed) rows.push(parsed);
+        if (parsed) {
+          if (!parsed.prev_org) {
+            const nextOrgAtBoundary = allOrgMatches.find((m) => m.index === rowEnd && !isPositionOrg(m.organization));
+            if (nextOrgAtBoundary) {
+              parsed.prev_org = formatInstitutionName(nextOrgAtBoundary.organization);
+            }
+          }
+          rows.push(parsed);
+        }
         i++;
       } else {
         // 2행 포맷: (기관) 직위\n(직급) 이름 현직위 현임기관

@@ -185,6 +185,12 @@ function UserView() {
   const [message, setMessage] = useState("");
   const [searched, setSearched] = useState(false);
 
+  function getFilterEntries() {
+    return Object.entries(query)
+      .map(([key, value]) => [key, value.trim()])
+      .filter(([, value]) => value);
+  }
+
   async function load(nextPage = page) {
     const params = new URLSearchParams({ page: String(nextPage), limit: "20" });
     Object.entries(query).forEach(([key, value]) => {
@@ -202,11 +208,23 @@ function UserView() {
   }
 
   function handleSearch() {
+    const entries = getFilterEntries();
+    if (!entries.length) {
+      setMessage("이름, 기관, 과목, 발령일 중 하나 이상 입력해야 검색할 수 있습니다.");
+      setSearched(false);
+      return;
+    }
+    if (entries.some(([, value]) => value.length < 2)) {
+      setMessage("검색어는 2글자 이상 입력해야 합니다.");
+      setSearched(false);
+      return;
+    }
+    setMessage("");
     load(1);
   }
 
   function handleFilterKeyDown(event) {
-    if (event.key === "Enter") load(1);
+    if (event.key === "Enter") handleSearch();
   }
 
   return (

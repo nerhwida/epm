@@ -48,6 +48,7 @@ const SUBJECT_KEYWORDS = [...new Set([
   "상업",
   "공업",
   "건설",
+  "건축",
   "토목",
   "기계·금속",
   "자동차",
@@ -56,6 +57,7 @@ const SUBJECT_KEYWORDS = [...new Set([
   "디자인·공예",
   "식품가공",
   "조리",
+  "식물자원·조경",
   "물리",
   "화학",
   "생물",
@@ -122,6 +124,11 @@ function normalizeText(text) {
 }
 
 function splitRecords(text) {
+  // 탭 구분 표는 normalizeText가 탭을 공백으로 뭉개 컬럼 경계를 잃기 전에 원문 그대로 통째로 넘긴다.
+  if (text.includes("\t") && parseTabDelimitedRecords(text).length) {
+    return [text];
+  }
+
   const normalized = normalizeText(text);
   if (!normalized) return [];
   const compacted = compactText(normalized);
@@ -195,6 +202,16 @@ function compactValue(text) {
 
 function compactKeyword(keyword) {
   return keyword.replace(/\s+/g, "");
+}
+
+// compactText(text)의 i번째 문자가 원문 text에서 몇 번째 인덱스인지 매핑
+// (공백만 제거되므로 순서는 그대로 유지됨 — 낱자분리 공백 등 원문 신호를 되짚어올 때 사용)
+function buildOriginalIndexMap(text) {
+  const map = [];
+  for (let i = 0; i < text.length; i++) {
+    if (!/\s/.test(text[i])) map.push(i);
+  }
+  return map;
 }
 
 const POSITION_PATTERNS = [
@@ -345,7 +362,7 @@ function isInstructionPosition(text, positionEntry) {
   return isInstructionSuffix(text.slice(positionEntry.end));
 }
 
-function parseTableRow(rowText, organization) {
+function parseTableRow(rowText, organization, originalRowText) {
   const positions = findPositionOccurrences(rowText);
   const currentPosition = positions.find((item) => item.index === 0) || positions[0];
   if (!currentPosition) return null;
@@ -366,8 +383,16 @@ function parseTableRow(rowText, organization) {
   const afterCurrentPosition = rowText.slice(positionEnd);
   // 임용 지시문(에임함/에보함)으로 시작하면 데이터 행이 아님
   if (afterCurrentPosition.startsWith("에임함") || afterCurrentPosition.startsWith("에보함")) return null;
-  const restPositions = findPositionOccurrences(afterCurrentPosition)
-    .filter((item) => !isInstructionPosition(afterCurrentPosition, item));
+  const restPositions = findPositionOccurrences(afterCurrentPosition).filter((item) => {
+    if (isInstructionPosition(afterCurrentPosition, item)) return false;
+    // 2글자 이하 짧은 키워드가 이름 끝 글자 + 과목 첫 글자와 겹치는 오인 방지
+    // 예: "이시교사회" → "교사"(index 2)의 끝 "사"부터 "사회"(과목)가 이어짐
+    if (item.end - item.index <= 2) {
+      const suffix = afterCurrentPosition.slice(item.end - 1);
+      if (SORTED_SUBJECT_KEYWORDS.some((kw) => suffix.startsWith(kw))) return false;
+    }
+    return true;
+  });
   const prevPositionInRest = restPositions[0];
   const term = findTerm(afterCurrentPosition);
 
@@ -389,6 +414,33 @@ function parseTableRow(rowText, organization) {
     subjectIndex = preferredSubject.index;
   }
 
+  // 과목 뒤에 자격 구분 괄호가 붙은 경우: 특수(중등), 특수(초등) 등
+  let subjectConsumedEnd = subjectIndex !== -1 ? subjectIndex + subject.length : -1;
+  if (subjectIndex !== -1 && afterCurrentPosition[subjectConsumedEnd] === "(") {
+    const trackMatch = /^\(([^)]+)\)/.exec(afterCurrentPosition.slice(subjectConsumedEnd));
+    if (trackMatch) {
+      const track = compactValue(trackMatch[1]);
+      if (["중등", "초등", "유아"].includes(track)) {
+        subject = `${subject}(${track})`;
+        subjectConsumedEnd += trackMatch[0].length;
+      }
+    }
+  }
+
+  // 이름이 낱자분리된 경우(예: "고 수 진") 원문 공백 신호로 이름 경계를 직접 확정
+  // (과목이 SUBJECT_KEYWORDS에 없으면 아래 nameEnd 추정이 부정확해질 수 있음)
+  let nameOverride = null;
+  if (originalRowText) {
+    const origIndexMap = buildOriginalIndexMap(originalRowText);
+    const origOffset = origIndexMap[positionEnd];
+    if (origOffset !== undefined) {
+      const tokens = originalRowText.slice(origOffset).trim().split(/\s+/).filter(Boolean);
+      if (tokens.length >= 3 && tokens.slice(0, 3).every((token) => /^[가-힣]$/.test(token))) {
+        nameOverride = tokens.slice(0, 3).join("");
+      }
+    }
+  }
+
   // 이름 끝: 과목 > 다음 직위 > 신규 순으로 경계 결정
   const nameEnd = subjectIndex !== -1
     ? subjectIndex
@@ -396,7 +448,7 @@ function parseTableRow(rowText, organization) {
       ? prevPositionInRest.index
       : afterCurrentPosition.indexOf("신규");
   const rawName = afterCurrentPosition.slice(0, nameEnd === -1 ? undefined : nameEnd);
-  const name = rawName.match(/^[가-힣]{2,4}/)?.[0] || "";
+  const name = nameOverride || rawName.match(/^[가-힣]{2,4}/)?.[0] || "";
 
   const prevPosition = prevPositionInRest
     ? {
@@ -408,28 +460,37 @@ function parseTableRow(rowText, organization) {
 
   // 현직위가 "보직명(직급)" 형태인 경우 보직명 추출 (예: "과장(장학관)")
   let prevPositionLabel = prevPositionInRest?.position || "";
+  let prevPositionConsumedEnd = prevPositionInRest?.end ?? 0;
   if (prevPositionInRest && afterCurrentPosition[prevPositionInRest.index - 1] === "(" && afterCurrentPosition[prevPositionInRest.end] === ")") {
     const textBeforeParen = afterCurrentPosition.slice(0, prevPositionInRest.index - 1);
     const posPrefix = textBeforeParen.match(/[가-힣]+$/)?.[0] || "";
-    if (posPrefix) prevPositionLabel = `${posPrefix}(${prevPositionInRest.position})`;
+    if (posPrefix) {
+      prevPositionLabel = `${posPrefix}(${prevPositionInRest.position})`;
+      prevPositionConsumedEnd = prevPositionInRest.end + 1;
+    }
   }
 
-  // 현직위 키워드 바로 뒤에 임용 방식 괄호가 붙은 경우: 중등학교 교장(공모)
-  if (prevPositionInRest && afterCurrentPosition[prevPositionInRest.end] === "(") {
-    const qualifierMatch = /^\(([^)]+)\)/.exec(afterCurrentPosition.slice(prevPositionInRest.end));
+  // 현직위 키워드 바로 뒤에 괄호가 붙은 경우: 공모/초빙 방식이거나 "원장(교육연구관)" 같은 세부 직급
+  if (prevPositionInRest && afterCurrentPosition[prevPositionConsumedEnd] === "(") {
+    const qualifierMatch = /^\(([^)]+)\)/.exec(afterCurrentPosition.slice(prevPositionConsumedEnd));
     if (qualifierMatch) {
       const qualifier = compactValue(qualifierMatch[1]);
       if (["공모", "초빙"].includes(qualifier)) {
         prevPositionLabel = `${prevPositionLabel}(${qualifier})`;
+        prevPositionConsumedEnd += qualifierMatch[0].length;
+      } else if (POSITION_KEYWORD_SET.has(qualifier)) {
+        const resolvedRank = POSITION_PATTERNS.find((p) => p.keyword === qualifier)?.position || qualifier;
+        prevPositionLabel = `${prevPositionLabel}(${resolvedRank})`;
+        prevPositionConsumedEnd += qualifierMatch[0].length;
       }
     }
   }
 
   let prevOrg = rowText.includes("신규") ? "신규" : "";
   if (prevPosition) {
-    prevOrg = trimAppointmentInstruction(rowText.slice(prevPosition.end));
+    prevOrg = trimAppointmentInstruction(rowText.slice(positionEnd + prevPositionConsumedEnd));
   } else if (subjectIndex !== -1) {
-    const candidateOrg = trimAppointmentInstruction(afterCurrentPosition.slice(subjectIndex + subject.length));
+    const candidateOrg = trimAppointmentInstruction(afterCurrentPosition.slice(subjectConsumedEnd));
     if (candidateOrg && !candidateOrg.endsWith("신규")) {
       prevOrg = candidateOrg;
     }
@@ -455,30 +516,64 @@ function findAliasedPosition(text) {
   return null;
 }
 
-function parseNameLeadRow(rowText) {
-  const pickEarlier = (a, b) => {
-    if (!a) return b;
-    if (!b) return a;
-    return a.index <= b.index ? a : b;
-  };
+function pickEarlierPosition(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return a.index <= b.index ? a : b;
+}
 
-  // 첫 직위(풀 또는 단축형) 위치로 이름 경계 결정
-  const firstInRow = pickEarlier(findPositionOccurrences(rowText)[0] || null, findAliasedPosition(rowText));
-  const nameEnd = firstInRow?.index ?? 4;
-  const name = rowText.slice(0, Math.min(nameEnd, 4)).match(/^[가-힣]{2,4}/)?.[0] || "";
+// originalText: 공백/줄바꿈이 보존된 원문 조각 (이름의 낱자분리 공백 "김 상 규"를 살려
+// 이름/보직명 경계를 구분하는 데 사용됨 — compactText는 이 신호를 지워버리므로 사용하지 않음)
+function parseNameLeadRow(originalText) {
+  const lines = originalText.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return { name: "", prev_position: "", prev_org: "" };
 
-  const afterName = rowText.slice(name.length);
-  const prevPosEntry = pickEarlier(findPositionOccurrences(afterName)[0] || null, findAliasedPosition(afterName));
-  const prev_position = prevPosEntry?.position || "";
+  const firstLine = lines[0];
+  const tokens = firstLine.split(/\s+/).filter(Boolean);
+
+  let name = "";
+  let titleText = "";
+  if (tokens.length >= 4 && tokens.slice(0, 3).every((token) => /^[가-힣]$/.test(token))) {
+    // 이름이 낱자분리된 경우 (예: "김 상 규 교육국장")
+    name = tokens.slice(0, 3).join("");
+    titleText = tokens.slice(3).join("");
+  } else {
+    // 공백 구분이 없는 경우: 첫 직위(풀 또는 단축형) 위치로 이름 경계 결정
+    const compactedFirst = compactText(firstLine);
+    const firstInRow = pickEarlierPosition(findPositionOccurrences(compactedFirst)[0] || null, findAliasedPosition(compactedFirst));
+    const nameEnd = Math.min(firstInRow?.index ?? 4, 4);
+    name = compactedFirst.slice(0, nameEnd).match(/^[가-힣]{2,4}/)?.[0] || "";
+    titleText = compactedFirst.slice(name.length);
+  }
+
+  const titleKeyword = pickEarlierPosition(findPositionOccurrences(titleText)[0] || null, findAliasedPosition(titleText));
+
+  let prev_position = "";
+  let restText = "";
+
+  if (titleKeyword && titleKeyword.index === 0) {
+    // 현직위 자체가 키워드인 경우 (예: "중등학교교장(대전고)")
+    prev_position = titleKeyword.position;
+    restText = [titleText.slice(titleKeyword.end), ...lines.slice(1).map(compactText)].join("");
+  } else if (titleText) {
+    // "보직명(직급)" 형태로 직급이 다음 줄 괄호에 걸쳐 있는 경우 (예: "교육국장" + "(장학관) 대전광역시교육청")
+    const nextLine = lines[1] ? compactText(lines[1]) : "";
+    const rankMatch = /^\(([^)]+)\)/.exec(nextLine);
+    const rankKeyword = rankMatch ? compactValue(rankMatch[1]) : "";
+    if (rankKeyword && POSITION_KEYWORD_SET.has(rankKeyword)) {
+      const resolvedRank = POSITION_PATTERNS.find((p) => p.keyword === rankKeyword)?.position || rankKeyword;
+      prev_position = `${titleText}(${resolvedRank})`;
+      restText = [nextLine.slice(rankMatch[0].length), ...lines.slice(2).map(compactText)].join("");
+    }
+  }
 
   let prev_org = "";
-  if (prevPosEntry) {
-    const afterPrevPos = afterName.slice(prevPosEntry.end);
+  if (prev_position) {
     const stopAt = Math.min(
-      findPositionOccurrences(afterPrevPos)[0]?.index ?? Infinity,
-      findAliasedPosition(afterPrevPos)?.index ?? Infinity,
+      findPositionOccurrences(restText)[0]?.index ?? Infinity,
+      findAliasedPosition(restText)?.index ?? Infinity,
     );
-    prev_org = stopAt === Infinity ? afterPrevPos : afterPrevPos.slice(0, stopAt);
+    prev_org = stopAt === Infinity ? restText : restText.slice(0, stopAt);
   }
 
   return { name, prev_position, prev_org: formatInstitutionName(trimAppointmentInstruction(prev_org)) };
@@ -486,6 +581,7 @@ function parseNameLeadRow(rowText) {
 
 function parseTableLikeRecords(text) {
   const compacted = compactText(text);
+  const originalIndexMap = buildOriginalIndexMap(text);
   const tableHeaderIndexes = [compacted.indexOf("발령기관"), compacted.indexOf("신임교")]
     .filter((index) => index !== -1);
   const tableHeaderIndex = tableHeaderIndexes.length ? Math.min(...tableHeaderIndexes) : -1;
@@ -495,6 +591,13 @@ function parseTableLikeRecords(text) {
   }
 
   const tableText = compacted.slice(tableHeaderIndex);
+  // tableText 내 [start,end) 구간에 대응하는 원문(공백/줄바꿈 보존) 조각
+  function sliceOriginal(start, end) {
+    if (end <= start) return "";
+    const origStart = originalIndexMap[tableHeaderIndex + start];
+    const origEnd = originalIndexMap[tableHeaderIndex + end - 1] + 1;
+    return text.slice(origStart, origEnd);
+  }
   const allOrgMatches = [...tableText.matchAll(/\(([^)]+)\)/g)]
     .map((match) => ({
       index: match.index,
@@ -541,7 +644,7 @@ function parseTableLikeRecords(text) {
         // 포지션 키워드 뒤에 이름 등 내용이 있으면 1행 내부 포지션 괄호 — 1행으로 처리
         const rowEnd = calcRowEnd(curr.end, true);
         const rowText = tableText.slice(curr.end, rowEnd);
-        const parsed = parseTableRow(rowText, curr.organization);
+        const parsed = parseTableRow(rowText, curr.organization, sliceOriginal(curr.end, rowEnd));
         if (parsed) {
           if (!parsed.prev_org) {
             const nextOrgAtBoundary = allOrgMatches.find((m) => m.index === rowEnd && !isPositionOrg(m.organization));
@@ -557,8 +660,10 @@ function parseTableLikeRecords(text) {
         const basePosition = firstPos?.position || "";
         const combinedPosition = basePosition ? `${basePosition}(${next.organization})` : next.organization;
 
-        const dataText = tableText.slice(next.end, calcRowEnd(next.end));
-        const { name, prev_position, prev_org } = parseNameLeadRow(dataText);
+        // 직급 키워드 괄호(예: (장학관))도 건너뛰어 현직위가 다음 줄에 걸친 "보직명(직급)"
+        // 형태를 놓치지 않도록 원문(공백/줄바꿈 보존) 조각으로 이름/현직위 경계를 판별
+        const originalDataText = sliceOriginal(next.end, calcRowEnd(next.end, true));
+        const { name, prev_position, prev_org } = parseNameLeadRow(originalDataText);
 
         rows.push({
           organization: formatInstitutionName(curr.organization),
@@ -578,7 +683,7 @@ function parseTableLikeRecords(text) {
       }
       const rowEnd = calcRowEnd(curr.end);
       const rowText = tableText.slice(curr.end, rowEnd);
-      const parsed = parseTableRow(rowText, curr.organization);
+      const parsed = parseTableRow(rowText, curr.organization, sliceOriginal(curr.end, rowEnd));
       if (parsed) {
         // prev_org가 없고 행 경계 바로 다음에 기관 괄호가 있으면 현임기관으로 사용
         if (!parsed.prev_org) {
@@ -598,6 +703,108 @@ function parseTableLikeRecords(text) {
 
 function parseTableLikeRecord(text) {
   return parseTableLikeRecords(text)[0] || null;
+}
+
+// F형: 신임교 표 (낱자분리, 괄호 없음) — 기관명이 괄호로 감싸이지 않고
+// "한 밭 여 중" 처럼 글자 단위로 띄어 쓴 표. parseTableLikeRecords는 괄호
+// 기반이라 이 형식에서는 유효 기관 매치가 없어 빈 배열을 반환하므로 별도 처리.
+function parseSpacedTableRecords(text) {
+  const lines = normalizeText(text).split("\n");
+  const headerLineIndex = lines.findIndex((line) => {
+    const c = compactText(line);
+    return c.includes("신임교") && (c.includes("현임교") || c.includes("현임기관"));
+  });
+  if (headerLineIndex === -1) return [];
+
+  const rows = [];
+  for (const line of lines.slice(headerLineIndex + 1)) {
+    const compactedLine = compactText(line);
+    if (!compactedLine) continue;
+    if (compactedLine.startsWith("(두서)") || compactedLine.includes("교육공무원법") || DATE_TEST_RE.test(line)) break;
+
+    const firstPos = findPositionOccurrences(compactedLine)[0];
+    if (!firstPos) continue;
+
+    const organization = compactedLine.slice(0, firstPos.index);
+    const rowText = compactedLine.slice(firstPos.index);
+    const parsed = parseTableRow(rowText, organization);
+    if (parsed) rows.push(parsed);
+  }
+
+  return rows;
+}
+
+// 탭 문자를 컬럼 구분자로 보존한 정규화 (normalizeText는 탭을 공백과 합쳐버려 컬럼 경계 정보를 잃음)
+function normalizeKeepTabs(text) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[･․．ㆍ‧・]/g, "·")
+    .replace(/～/g, "~")
+    .replace(/[ \t]*\t[ \t]*/g, "\t")
+    .replace(/ {2,}/g, " ")
+    .replace(/(\d{4})\s+(\d{1,2}\.)/g, "$1. $2")
+    .trim();
+}
+
+// "원장(교육연구관)" 같은 보직명(직급) 라벨과 "중등학교장" 같은 단축형을 표준형으로 정규화
+function resolvePositionLabel(value) {
+  const compacted = compactValue(value);
+  if (!compacted) return "";
+  const combined = /^([가-힣]+)\(([^)]+)\)$/.exec(compacted);
+  if (combined) {
+    const resolvedRank = POSITION_PATTERNS.find((p) => p.keyword === combined[2])?.position || combined[2];
+    return `${combined[1]}(${resolvedRank})`;
+  }
+  return POSITION_PATTERNS.find((p) => p.keyword === compacted)?.position || compacted;
+}
+
+// G형: 탭 구분 표 — 기관명/현직위/현임기관이 괄호 없이 각자의 셀에 그대로 들어있는 형태.
+// 탭이 컬럼 경계를 명확히 알려주므로 헤더 라벨로 컬럼을 찾아 그대로 매핑한다.
+function parseTabDelimitedRecords(rawText) {
+  if (!rawText.includes("\t")) return [];
+
+  const lines = normalizeKeepTabs(rawText).split("\n");
+  const headerIndex = lines.findIndex((line) => {
+    if (!line.includes("\t")) return false;
+    const cols = line.split("\t").map(compactText);
+    return (
+      cols.some((c) => c.includes("발령기관") || c.includes("신임교")) &&
+      cols.some((c) => c.includes("현임기관") || c.includes("현임교") || c.includes("소속교"))
+    );
+  });
+  if (headerIndex === -1) return [];
+
+  const headerCols = lines[headerIndex].split("\t").map(compactText);
+  const findCol = (predicate) => headerCols.findIndex(predicate);
+  const orgIdx = findCol((c) => c.includes("발령기관") || c.includes("신임교"));
+  const posIdx = findCol((c) => c.includes("직위") || c.includes("직급"));
+  const nameIdx = findCol((c) => c.includes("성명"));
+  const subjectIdx = findCol((c) => c.includes("과목"));
+  const termIdx = findCol((c) => c.includes("임용기간") || (c.includes("기간") && !c.includes("현")));
+  const prevPosIdx = findCol((c) => c.includes("현직위") || c.includes("현직급"));
+  const prevOrgIdx = findCol((c) => c.includes("현임기관") || c.includes("현임교") || c.includes("소속교"));
+
+  const rows = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (!line.includes("\t")) break;
+    const cols = line.split("\t");
+    const get = (idx) => (idx === -1 || idx >= cols.length ? "" : compactValue(cols[idx]));
+
+    const organization = get(orgIdx);
+    if (!organization) continue;
+
+    rows.push({
+      organization: formatInstitutionName(organization),
+      position: resolvePositionLabel(get(posIdx)),
+      name: get(nameIdx).match(/^[가-힣]{2,4}/)?.[0] || "",
+      subject: normalizeSubject(get(subjectIdx)),
+      term: findTerm(get(termIdx)),
+      prev_position: resolvePositionLabel(get(prevPosIdx)),
+      prev_org: formatInstitutionName(get(prevOrgIdx)),
+    });
+  }
+
+  return rows;
 }
 
 function findPositionAtStart(text) {
@@ -655,7 +862,7 @@ function isPositionLine(line) {
 
 function parseRetirementLikeRecords(text) {
   const compacted = compactText(text);
-  const RETIREMENT_TYPES = ["정년퇴직", "명예퇴직", "의원면직"];
+  const RETIREMENT_TYPES = ["정년퇴직", "명예퇴직", "의원면직", "임기만료"];
   const hasRetirementHeader =
     compacted.includes("직위(급)성명현임기관") ||
     compacted.includes("직위(급)성명현임교");
@@ -674,7 +881,7 @@ function parseRetirementLikeRecords(text) {
   for (const line of lines.slice(headerLineIndex + 1)) {
     const c = compactText(line);
     DATE_RE.lastIndex = 0;
-    if (!c || c.includes("교육공무원법") || DATE_TEST_RE.test(line)) break;
+    if (!c || c.includes("교육공무원법") || DATE_TEST_RE.test(line) || c.includes("면함")) break;
     dataLines.push(line);
   }
 
@@ -863,6 +1070,16 @@ export function parseAppointmentRecord(rawText) {
 }
 
 export function parseAppointmentRecords(rawText) {
+  const tabRows = parseTabDelimitedRecords(rawText);
+  if (tabRows.length) {
+    const text = normalizeText(rawText);
+    const dates = findDates(text);
+    const termDates = new Set(tabRows.flatMap((row) => (row.term ? findDates(row.term) : [])));
+    const appointment_date = dates.filter((d) => !termDates.has(d)).at(-1) || "";
+
+    return tabRows.map((row) => finalizeRecord(row, text, appointment_date));
+  }
+
   const text = normalizeText(rawText);
   const retirementRows = parseRetirementLikeRecords(text);
   if (retirementRows.length) {
@@ -872,8 +1089,18 @@ export function parseAppointmentRecords(rawText) {
     return retirementRows.map((row) => finalizeRecord(row, text, appointment_date));
   }
 
-  const tableRows = parseTableLikeRecords(text);
+  let tableRows = parseTableLikeRecords(text);
+  if (!tableRows.length) tableRows = parseSpacedTableRecords(text);
   if (!tableRows.length) return [parseAppointmentRecord(rawText)];
+
+  // "(기간: 날짜~날짜)" 형식의 임용기간이 지시문에 있으면 term 없는 행에 보완
+  const kiganMatch = /기간:(\d{4}\.\d{1,2}\.\d{1,2}\.?~\d{4}\.\d{1,2}\.\d{1,2}\.?)/.exec(compactText(text));
+  if (kiganMatch) {
+    const kiganTerm = kiganMatch[1];
+    for (const row of tableRows) {
+      if (!row.term) row.term = kiganTerm;
+    }
+  }
 
   const dates = findDates(text);
   const termDates = new Set(tableRows.flatMap((row) => (row.term ? findDates(row.term) : [])));

@@ -1,0 +1,56 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: epm-mongodb
+    restart: unless-stopped
+
+    volumes:
+      - mongodb_data:/data/db
+
+    networks:
+      - epm-network
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "db.adminCommand('ping').ok"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: epm-app
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+
+    ports:
+      - "127.0.0.1:4000:4000"
+
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+    networks:
+      - epm-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  epm-network:
+    driver: bridge

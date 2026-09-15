@@ -27,6 +27,51 @@ jobs:
           role-to-assume: arn:aws:iam::786584124104:role/EPM-GitHubActions-DeployRole
           aws-region: ap-northeast-2
 
+      - name: Create SSM deployment parameters
+        shell: bash
+        run: |
+          cat > /tmp/epm-deploy.json <<'EOF'
+          {
+            "commands": [
+              "set -u",
+              "cd /opt/epm",
+              "echo '=== EPM deployment started ==='",
+              "OLD_COMMIT=$(sudo -u ssm-user git rev-parse HEAD)",
+              "OLD_IMAGE=$(docker inspect epm-app --format='{{.Image}}')",
+              "echo \"Previous commit: $OLD_COMMIT\"",
+              "echo \"Previous image: $OLD_IMAGE\"",
+              "docker tag \"$OLD_IMAGE\" epm-app:rollback",
+              "echo 'Rollback image saved as epm-app:rollback'",
+              "sudo -u ssm-user git fetch origin main",
+              "sudo -u ssm-user git reset --hard origin/main",
+              "NEW_COMMIT=$(sudo -u ssm-user git rev-parse HEAD)",
+              "echo \"Deploying commit: $NEW_COMMIT\"",
+              "echo '=== Building new image ==='",
+              "if ! docker compose build app; then echo 'BUILD FAILED - current container remains running'; sudo -u ssm-user git reset --hard \"$OLD_COMMIT\"; exit 10; fi",
+              "echo '=== Starting new application ==='",
+              "if ! docker compose up -d --no-deps --force-recreate app; then echo 'CONTAINER START FAILED - starting rollback'; docker tag epm-app:rollback epm-app:latest; sudo -u ssm-user git reset --hard \"$OLD_COMMIT\"; docker compose up -d --no-deps --force-recreate app; exit 20; fi",
+              "echo '=== Checking new application ==='",
+              "DEPLOY_OK=false",
+              "for i in $(seq 1 12); do if curl --fail --silent --show-error http://127.0.0.1:4000/ > /dev/null; then DEPLOY_OK=true; echo \"Health check successful on attempt $i\"; break; else echo \"Health check attempt $i/12 failed\"; sleep 5; fi; done",
+              "if [ \"$DEPLOY_OK\" = \"true\" ]; then echo '=== DEPLOYMENT SUCCESSFUL ==='; docker compose ps; exit 0; fi",
+              "echo '=== HEALTH CHECK FAILED - ROLLING BACK ==='",
+              "docker compose stop app || true",
+              "docker rm -f epm-app || true",
+              "docker tag epm-app:rollback epm-app:latest",
+              "sudo -u ssm-user git reset --hard \"$OLD_COMMIT\"",
+              "docker compose up -d --no-deps --force-recreate app",
+              "echo '=== Checking rollback application ==='",
+              "ROLLBACK_OK=false",
+              "for i in $(seq 1 12); do if curl --fail --silent --show-error http://127.0.0.1:4000/ > /dev/null; then ROLLBACK_OK=true; echo \"Rollback health check successful on attempt $i\"; break; else echo \"Rollback health check attempt $i/12 failed\"; sleep 5; fi; done",
+              "if [ \"$ROLLBACK_OK\" = \"true\" ]; then echo '=== ROLLBACK SUCCESSFUL - PREVIOUS VERSION RESTORED ==='; docker compose ps; exit 30; fi",
+              "echo '=== CRITICAL: ROLLBACK FAILED ==='",
+              "docker compose ps",
+              "docker logs --tail 100 epm-app || true",
+              "exit 40"
+            ]
+          }
+          EOF
+
       - name: Send deployment command
         id: deploy
         shell: bash
@@ -34,18 +79,8 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "i-01c1d9300d9e33ab1" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy nerhwida/epm from GitHub Actions" \
-            --parameters 'commands=[
-              "set -e",
-              "cd /opt/epm",
-              "sudo -u ssm-user git fetch origin main",
-              "sudo -u ssm-user git reset --hard origin/main",
-              "docker compose build app",
-              "docker compose up -d --no-deps --force-recreate app",
-              "sleep 5",
-              "curl --fail --silent --show-error http://127.0.0.1:4000/",
-              "docker compose ps"
-            ]' \
+            --comment "Deploy nerhwida/epm with automatic rollback" \
+            --parameters file:///tmp/epm-deploy.json \
             --query "Command.CommandId" \
             --output text)
 
@@ -80,7 +115,7 @@ jobs:
                 ;;
 
               Failed|Cancelled|TimedOut)
-                echo "EPM deployment failed."
+                echo "EPM deployment failed or rollback was performed."
 
                 aws ssm get-command-invocation \
                   --command-id "$COMMAND_ID" \

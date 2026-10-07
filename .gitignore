@@ -7,3 +7,8 @@ dist/
 .DS_Store
 Thumbs.db
 claude.md
+# Backup files
+backup/
+
+# Parsed output files
+parsed-*.json
